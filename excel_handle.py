@@ -8,7 +8,7 @@ from openpyxl.styles import Border, Side,Font
 from PIL import Image, ImageDraw, ImageFont
 import openpyxl
 
-font_path = "C:/Windows/Fonts/simsun.ttc"
+font_path = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
 font = ImageFont.truetype(font_path, 24)
 def Initialized_Data():
     workbook = openpyxl.Workbook()
