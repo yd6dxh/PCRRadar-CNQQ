@@ -56,7 +56,8 @@ clan_binds = root['clan_bind']
 if exists(history):
     with open(history) as hi:
         root2 = load(hi)
-root2 = {
+else:
+    root2 = {
     'history' : {}
 }
 clan_history = root2['history']
@@ -189,12 +190,14 @@ client = pcrclient(bclient)
 
 qlck = Lock()
 
-@on_command('/pcrvalx')
-async def validate(session):
-    global binds, lck, validate
+@on_command('/pcrval')
+async def handle_pcrval(session):
+    global validate
     if session.ctx['user_id'] == acinfo['admin']:
-        validate = session.ctx['message'].extract_plain_text().strip()[9:]
-        captcha_lck.release()
+        code = session.ctx['message'].extract_plain_text().strip()[8:]
+        validate = code
+        if captcha_lck.locked():
+            captcha_lck.release()
 
 def is_group_admin(ctx):
     return ctx['sender']['role'] in ['owner', 'admin', 'administrator']
