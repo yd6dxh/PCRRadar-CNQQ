@@ -1,4 +1,6 @@
 __pycache__/
 *.pyc
 
+history.json
+bind.json
 account.json
