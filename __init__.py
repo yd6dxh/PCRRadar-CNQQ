@@ -56,8 +56,7 @@ clan_binds = root['clan_bind']
 if exists(history):
     with open(history) as hi:
         root2 = load(hi)
-else:
-    root2 = {
+root2 = {
     'history' : {}
 }
 clan_history = root2['history']
@@ -80,37 +79,23 @@ async def captchaVerifierV2(gt, challenge, userid):
     while captcha_cnt < 5:
         captcha_cnt += 1
         try:
-            sv.logger.info(f'测试新版自动过码中，当前尝试第{captcha_cnt}次。')
+            print(f'测试新版自动过码中，当前尝试第{captcha_cnt}次。')
 
             await sleep(1)
+            uuid = loads(await (await get(url="https://pcrd.tencentbot.top/geetest")).content)["uuid"]
+            print(f'uuid={uuid}')
 
-            url = f"https://pcrd.tencentbot.top/geetest_renew?captcha_type=1&challenge={challenge}&gt={gt}&userid={userid}&gs=1"
-            header = {"Content-Type": "application/json", "User-Agent": "pcrjjc2/1.0.0"}
-            # uuid = loads(await (await get(url="https://pcrd.tencentbot.top/geetest")).content)["uuid"]
-            # print(f'uuid={uuid}')
-
-            res = await (await aiorequests.get(url=url, headers=header)).content
-            res = loads(res)
-            uuid = res["uuid"]
-            msg = [f"uuid={uuid}"]
-            
             ccnt = 0
-            while ccnt < 10:
+            while ccnt < 3:
                 ccnt += 1
-                res = await (await aiorequests.get(url=f"https://pcrd.tencentbot.top/check/{uuid}", headers=header)).content
-                #if str(res.status_code) != "200":
-                #    continue
-                # print(res)
+                await sleep(5)
+                res = await (await get(url=f"https://pcrd.tencentbot.top/check/{uuid}")).content
                 res = loads(res)
                 if "queue_num" in res:
                     nu = res["queue_num"]
-                    msg.append(f"queue_num={nu}")
-                    tim = min(int(nu), 3) * 10
-                    msg.append(f"sleep={tim}")
-                    #await bot.send_private_msg(user_id=acinfo['admin'], message=f"thread{ordd}: \n" + "\n".join(msg))
-                    # print(f"pcrjjc2:\n" + "\n".join(msg))
-                    msg = []
-                    # print(f'farm: {uuid} in queue, sleep {tim} seconds')
+                    print(f"queue_num={nu}")
+                    tim = min(int(nu), 3) * 5
+                    print(f"sleep={tim}")
                     await sleep(tim)
                 else:
                     info = res["info"]
@@ -118,86 +103,60 @@ async def captchaVerifierV2(gt, challenge, userid):
                         break
                     elif info == "in running":
                         await sleep(5)
-                    elif 'validate' in info:
-                        # print(f'info={info}')
+                    else:
+                        print(f'info={info}')
                         validating = False
                         return info["challenge"], info["gt_user_id"], info["validate"]
-                if ccnt >= 10:
-                    raise Exception("Captcha failed")
-
-            # ccnt = 0
-            # while ccnt < 3:
-            #     ccnt += 1
-            #     await sleep(5)
-            #     res = await (await get(url=f"https://pcrd.tencentbot.top/check/{uuid}")).content
-            #     res = loads(res)
-            #     if "queue_num" in res:
-            #         nu = res["queue_num"]
-            #         print(f"queue_num={nu}")
-            #         tim = min(int(nu), 3) * 5
-            #         print(f"sleep={tim}")
-            #         await sleep(tim)
-            #     else:
-            #         info = res["info"]
-            #         if info in ["fail", "url invalid"]:
-            #             break
-            #         elif info == "in running":
-            #             await sleep(5)
-            #         else:
-            #             print(f'info={info}')
-            #             validating = False
-            #             return info["challenge"], info["gt_user_id"], info["validate"]
         except:
             pass
-
-    await sendToAdmin(
-        f'自动过码多次尝试失败，可能为服务器错误，自动切换为手动。\n确实服务器无误后，可发送/pcrval重新触发自动过码。')
     validate = await captchaVerifier(gt, challenge, userid)
     validating = False
     return challenge, userid, validate
-
-
+    
 async def captchaVerifier(gt, challenge, userid):
     global acfirst
     if not acfirst:
         await captcha_lck.acquire()
         acfirst = True
-
     online_url_head = "https://cc004.github.io/geetest/geetest.html"
-#     local_url_head = f"{await get_public_address()}/geetest"
-    local_url_head = f"{get_public_address()}/geetest"
+    local_url_head = f"{public_address}/geetest"
     url = f"?captcha_type=1&challenge={challenge}&gt={gt}&userid={userid}&gs=1"
-    await sendToAdmin(
-        f'pcr账号登录需要验证码，请完成以下链接中的验证内容后将第一行validate=后面的内容复制，'
-        f'并用指令/pcrval xxxx将内容发送给机器人完成验证'
-        f'\n验证链接头：{local_url_head}链接{url}，备用链接头：{online_url_head}'
-        f'\n为避免tx网页安全验证使验证码过期，请手动拼接链接头和链接\n'
-        f'注意：如果你没有公网IP，请使用127.0.0.1:8080/geetest作为你的链接头！'
-    )
-
+    await bot.send_private_msg(
+            user_id = acinfo['admin'],
+            message = f'pcr账号登录需要验证码，请完成以下链接中的验证内容后将第一行validate=后面的内容复制，并用指令/pcrvalx xxxx将内容发送给机器人完成验证\n验证链接：\n验证链接头：{local_url_head}链接{url}，备用链接头：{online_url_head}'
+        )
     await captcha_lck.acquire()
     return validate
 
-
 async def errlogger(msg):
     await bot.send_private_msg(
-        user_id=acinfo['admin'],
-        message=f'pcrjjc2登录错误：{msg}'
+        user_id = acinfo['admin'],
+        message = f'pcrjjc2登录错误：{msg}'
     )
 
 bclient = bsdkclient(acinfo, captchaVerifierV2, errlogger)
 client = pcrclient(bclient)
 
 qlck = Lock()
-
-@on_command('/pcrval')
-async def handle_pcrval(session):
-    global validate
+'''
+@on_command('/pcrvalx')
+async def validate(session):
+    global binds, lck, validate
     if session.ctx['user_id'] == acinfo['admin']:
-        code = session.ctx['message'].extract_plain_text().strip()[8:]
-        validate = code
-        if captcha_lck.locked():
-            captcha_lck.release()
+        validate = session.ctx['message'].extract_plain_text().strip()[9:]
+        captcha_lck.release()
+        '''
+@sv.on_prefix(['/pcrvalx'])
+async def use(bot, ev: CQEvent):
+    global binds, lck, validate
+    args = ev.message.extract_plain_text().split()
+    print("success")
+    if str(ev.user_id) == str(acinfo['admin']):
+        validate = args[0]
+        captcha_lck.release()
+        print("success")
+    
+
 
 def is_group_admin(ctx):
     return ctx['sender']['role'] in ['owner', 'admin', 'administrator']
