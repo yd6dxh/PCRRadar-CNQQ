@@ -411,7 +411,7 @@ async def set_guild_admin(bot, ev: CQEvent):
             'admin': uid,
             'time': last.get('time', 23),
             }
-save_binds()
+    save_binds()
     await bot.finish(ev, f'设定成功！')
 
 @sv.on_prefix(['国服绑定公会'])
