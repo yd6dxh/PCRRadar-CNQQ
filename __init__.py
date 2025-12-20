@@ -374,7 +374,7 @@ async def times(bot, ev: CQEvent):
             'admin': last.get('admin'),
             'time': time
             }
-save_binds()
+    save_binds()
     await bot.finish(ev, f'设定成功！')
 
 @sv.on_prefix(['国服会长设定'])
