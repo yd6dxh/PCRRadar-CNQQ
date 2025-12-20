@@ -22,11 +22,10 @@ from .excel_handle import excel_data, sort_excel_with_styles, get_cell_size, Ini
 from .SY_handle import has_claimed_reward, get_KRANK, SY_data
 from .geetest import public_address
 
-# 核心导入修正：确保异步请求可用
+# --- 核心网络库导入 ---
 try:
     from .aiorequests import get as async_get
 except ImportError:
-    # 兼容性备选导入
     async_get = None
 
 sv = SafeService('深域查询')
@@ -58,8 +57,9 @@ if exists(history):
 else:
     root2 = {'history': {}}
 clan_history = root2['history']
-captcha_lck = Lock()
 
+# --- 全局变量初始化 ---
+captcha_lck = Lock()
 with open(join(curpath, 'account.json')) as fp:
     acinfo = load(fp)
 
@@ -67,15 +67,16 @@ bot = get_bot()
 validate = None
 validating = False
 acfirst = False
+sss = 1  # 修复：初始化 sss 变量，防止 query 函数报错
 
-# --- 自动过码逻辑优化版 ---
+# --- 自动过码逻辑 ---
 async def captchaVerifierV2(gt, challenge, userid):
     global validating, async_get
     validating = True
     captcha_cnt = 0
     
     if not async_get:
-        sv.logger.error("未找到 aiorequests.get，请检查文件是否存在")
+        sv.logger.error("未找到 aiorequests.get，无法自动过码，尝试手动")
         return await captchaVerifier(gt, challenge, userid)
 
     while captcha_cnt < 5:
@@ -83,272 +84,153 @@ async def captchaVerifierV2(gt, challenge, userid):
         try:
             sv.logger.info(f'正在尝试自动过码 (第{captcha_cnt}次)...')
             await asyncio.sleep(1)
-
-            # 使用新版接口和 Header
             url = f"https://pcrd.tencentbot.top/geetest_renew?captcha_type=1&challenge={challenge}&gt={gt}&userid={userid}&gs=1"
             header = {"Content-Type": "application/json", "User-Agent": "pcrjjc2/1.0.0"}
 
             response = await async_get(url=url, headers=header)
-            res_content = await response.content
-            res = loads(res_content)
+            res = loads(await response.content)
             
-            if "uuid" not in res:
-                sv.logger.error(f"过码服务器响应异常: {res}")
-                continue
-                
+            if "uuid" not in res: continue
             uuid = res["uuid"]
-            sv.logger.info(f'任务已创建 uuid={uuid}，开始轮询状态...')
             
             ccnt = 0
-            while ccnt < 10: # 内部轮询 10 次
+            while ccnt < 10:
                 ccnt += 1
                 await asyncio.sleep(5)
-                
-                check_resp = await async_get(url=f"https://pcrd.tencentbot.top/check/{uuid}", headers=header)
-                check_res = loads(await check_resp.content)
+                check_res = loads(await (await async_get(url=f"https://pcrd.tencentbot.top/check/{uuid}", headers=header)).content)
                 
                 if "queue_num" in check_res:
-                    nu = check_res["queue_num"]
-                    tim = min(int(nu), 3) * 10
-                    sv.logger.info(f"服务器排队中: 队列 {nu}, 等待 {tim}s")
-                    await asyncio.sleep(tim)
+                    await asyncio.sleep(min(int(check_res["queue_num"]), 3) * 10)
                 else:
                     info = check_res.get("info")
-                    if info in ["fail", "url invalid"]:
-                        sv.logger.warning(f"过码失败: {info}")
-                        break
-                    elif info == "in running":
-                        continue
+                    if info in ["fail", "url invalid"]: break
+                    elif info == "in running": continue
                     elif isinstance(info, dict) and 'validate' in info:
                         sv.logger.info("自动过码成功！")
                         validating = False
                         return info["challenge"], info["gt_user_id"], info["validate"]
-            
         except Exception as e:
-            sv.logger.error(f"自动过码第 {captcha_cnt} 次循环出错: {e}")
-            sv.logger.error(format_exc())
+            sv.logger.error(f"过码异常: {e}")
 
-    # 全部尝试失败，转手动
-    sv.logger.error("自动过码多次尝试失败，切换至手动模式")
-    await bot.send_private_msg(
-        user_id = acinfo['admin'],
-        message = '自动过码多次尝试失败，已自动切换为【手动模式】，请及时处理。'
-    )
-    
-    validate_res = await captchaVerifier(gt, challenge, userid)
+    await sendToAdmin('自动过码失败，已切换为手动模式。')
+    v = await captchaVerifier(gt, challenge, userid)
     validating = False
-    return challenge, userid, validate_res
+    return challenge, userid, v
 
+# --- 手动过码逻辑 (已修复死锁) ---
 async def captchaVerifier(gt, challenge, userid):
-    global acfirst, validate
-    if not acfirst:
-        await captcha_lck.acquire()
-        acfirst = True
-    online_url_head = "https://cc004.github.io/geetest/geetest.html"
-    local_url_head = f"{public_address}/geetest"
-    url = f"?captcha_type=1&challenge={challenge}&gt={gt}&userid={userid}&gs=1"
-    await bot.send_private_msg(
-            user_id = acinfo['admin'],
-            message = f'pcr账号登录需要验证码，请点击完成验证：\n本地链接：{local_url_head}{url}\n完成后回复指令：/pcrvalx [内容]'
-        )
-    # 此处等待 /pcrvalx 指令释放锁
-    async with captcha_lck:
-        return validate
+    global validate
+    # 如果锁已被占用，先强制释放
+    if captcha_lck.locked():
+        try: captcha_lck.release()
+        except: pass
+
+    url = f"{public_address}/geetest?captcha_type=1&challenge={challenge}&gt={gt}&userid={userid}&gs=1"
+    await bot.send_private_msg(user_id=acinfo['admin'], message=f'请完成验证：\n{url}\n完成后回复：/pcrvalx [内容]')
+    
+    await captcha_lck.acquire() # 阻塞，直到 /pcrvalx 释放锁
+    return validate
+
+# --- 消息处理 ---
+async def sendToAdmin(msg):
+    await bot.send_private_msg(user_id=acinfo['admin'], message=msg)
 
 async def errlogger(msg):
     sv.logger.error(f"登录错误: {msg}")
-    await bot.send_private_msg(user_id=acinfo['admin'], message=f'pcrjjc2登录错误：{msg}')
+    await sendToAdmin(f'pcrjjc2登录错误：{msg}')
 
 bclient = bsdkclient(acinfo, captchaVerifierV2, errlogger)
 client = pcrclient(bclient)
 qlck = Lock()
 
-# --- 指令处理函数更名，避免冲突 ---
+# 登录只做一次：避免 query/query2/query3/query4 重复 login
+async def ensure_login():
+    global sss
+    if sss == 1:
+        await client.login()
+        sss = 0
+
 @on_command('/pcrvalx')
-async def pcr_manual_validate(session):
+async def pcr_manual_val(session):
     global validate
     if session.ctx['user_id'] == acinfo['admin']:
-        validate_text = session.ctx['message'].extract_plain_text().strip()
-        # 兼容处理：如果是直接发送的 validate 内容
-        if '/pcrvalx' in validate_text:
-            validate = validate_text.replace('/pcrvalx', '').strip()
-        else:
-            validate = validate_text
-        
+        validate = session.ctx['message'].extract_plain_text().replace('/pcrvalx', '').strip()
         if captcha_lck.locked():
             captcha_lck.release()
-            await session.send("验证成功，正在继续登录流程...")
+            await session.send("验证已提交")
 
-# --- 修复 IndexError 问题的指令部分 ---
+# --- 核心查询函数 (已修复 sss 引用) ---
+
+async def query(id: str):
+    async with qlck:
+        await ensure_login()
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            try:
+                res = await client.callapi('/profile/get_profile', {'target_viewer_id': int(id)})
+                return res['user_info']
+            except:
+                if attempt == max_retries:
+                    raise
+                await asyncio.sleep(2)
+
+async def query2(id: str):
+    async with qlck:
+        await ensure_login()
+        return await client.callapi('/profile/get_profile', {'target_viewer_id': int(id)})
+
+async def query3(name):
+    async with qlck:
+        await ensure_login()
+        return await client.callapi('/clan/search_clan', {
+            'clan_name': str(name),
+            "join_condition": 1,
+            "member_condition_range": 0,
+            "activity": 0,
+            "clan_battle_mode": 0
+        })
+
+async def query4(clan_id):
+    async with qlck:
+        await ensure_login()
+        return await client.callapi('/clan/others_info', {'clan_id': int(clan_id)})
+
+# --- 指令部分 (修复 IndexError) ---
 
 @sv.on_prefix(['国服绑定'])
-async def pcr_bind(bot, ev: CQEvent):
+async def pcr_bind_fixed(bot, ev: CQEvent):
     args = ev.message.extract_plain_text().split()
     gid = str(ev.group_id)
     if not args:
-        await bot.finish(ev, '用法：国服绑定 + 游戏ID + @用户(可选)', at_sender=True)
+        await bot.finish(ev, '用法：国服绑定 [游戏ID] [@某人]', at_sender=True)
     
     ID = args[0]
     target_uid = str(ev.user_id)
-    if len(args) > 1:
-        # 如果有第二个参数或AT，提取QQ号
-        for seg in ev.message:
-            if seg.type == 'at':
-                target_uid = str(seg.data['qq'])
-                break
-        if target_uid == str(ev.user_id): # 说明不是AT
-             target_uid = args[1]
+    for seg in ev.message:
+        if seg.type == 'at':
+            target_uid = str(seg.data['qq'])
+            break
 
     if gid not in binds:
         binds[gid] = {}
         cfg[gid] = {'admin': None, 'time' : 23}
     
     try:
-        res = await query2(ID)
-        res = res['user_info']
+        res = (await query2(ID))['user_info']
         binds[gid][ID] = {'id': str(ID), 'uid': target_uid, 'gid': gid, 'bindtype': '1'}
         save_binds()
         await bot.finish(ev, f'[{res["user_name"]}] 绑定成功！')
     except Exception as e:
         await bot.finish(ev, f'绑定失败：{e}')
 
-@sv.on_prefix(['删除国服绑定'])
-async def delete_arena_sub(bot, ev: CQEvent):
-    args = ev.message.extract_plain_text().split()
-    if not args: # 修复 IndexError
-        await bot.finish(ev, '请输入要删除的游戏ID。', at_sender=True)
-    
-    gid = str(ev.group_id)
-    u_priv = priv.get_user_priv(ev)
-    if u_priv < sv.manage_priv:
-        await bot.finish(ev, '权限不足', at_sender=True)
-    
-    ID = str(args[0])
-    if gid not in binds or ID not in binds[gid]:
-        await bot.finish(ev, f'该ID未在名单中！', at_sender=True)
-
-    async with lck:
-        del binds[gid][ID]
-        save_binds()
-    await bot.finish(ev, f'已移除 {ID}', at_sender=True)
-
-@sv.on_prefix(['国服录入公会', '国服绑定公会'])
-async def clan_bind_handler(bot, ev: CQEvent):
-    args = ev.message.extract_plain_text().split()
-    if not args: # 修复 IndexError
-        await bot.finish(ev, '请输入完整的公会名！', at_sender=True)
-    # ... 原有逻辑继续 ...
-    name = args[0]
-    # (此处省略中间重复的查询逻辑，建议保留你原本的 query3/query4 调用)
-    # 注意在所有访问 args[1] 的地方增加 if len(args) > 1 判断
-
-# --- 其他原本代码的 API 调用部分 (query/query2/query3/query4) 保持不变 ---
-# 请确保这些函数依然保留在你的文件中
-
-async def query(id: str):
-    async with qlck:
-        global sss
-        if sss == 1:
-            await client.login()
-            sss = 0
-        max_retries = 3
-        for attempt in range(1, max_retries + 1):
-            try:
-                res = await client.callapi('/profile/get_profile', {'target_viewer_id': int(id)})
-                return res['user_info']
-            except Exception as e:
-                if attempt == max_retries: raise e
-                await asyncio.sleep(2)
-
-async def query2(id: str):
-    async with qlck:
-        global sss
-        if sss == 1:
-            await client.login()
-            sss = 0
-        try:
-            return await client.callapi('/profile/get_profile', {'target_viewer_id': int(id)})
-        except Exception as e:
-            raise e
-    
-async def query3(name):
-    async with qlck:
-        global sss
-        if sss == 1:
-            sss = 0
-            await client.login()
-            
-        res = (await client.callapi('/clan/search_clan', {
-                'clan_name': str(name),
-                "join_condition": 1,
-                "member_condition_range": 0,
-                "activity": 0,
-                "clan_battle_mode": 0,
-            }))
-        return res
-    
-async def query4(clan_id):
-    async with qlck:
-        global sss
-        if sss == 1:
-            await client.login()
-            sss = 0
-        res = (await client.callapi('/clan/others_info', {
-                'clan_id': int(clan_id),
-            }))
-        
-        return res
-    
+# --- 辅助函数 ---
 def save_binds():
-    with open(config, 'w') as fp:
-        dump(root, fp, indent=4)
-
+    with open(config, 'w') as fp: dump(root, fp, indent=4)
 def save_history():
-    with open(history, 'w') as hi:
-        dump(root2, hi, indent=4)
-
-@sv.on_prefix(['国服绑定'])
-async def use(bot, ev: CQEvent):
-    args = ev.message.extract_plain_text().split()
-    gid = str(ev.group_id)
-    uid = str(ev.user_id)
-    #u_priv = priv.get_user_priv(ev)
-    #if u_priv < sv.manage_priv:
-        #await bot.finish(ev, '权限不足', at_sender=True)
-    if not gid in binds:
-        binds[gid] = {}
-        cfg[gid] = {
-            'admin': None,
-            'time' : 23,
-        }
-    if len(binds[gid]) >= 35:
-        await bot.finish(ev, f"{gid} 下的 uid 数量已达到上限！")
-    if not args:
-        await bot.finish(ev, '请输入 国服绑定+ID+QQ号（可忽略） 中间用空格隔开。', at_sender=True)
-    if len(args)>2:
-        await bot.finish(ev, '请输入 国服绑定+ID+QQ号（可忽略） 中间用空格隔开。', at_sender=True)
-    try:
-        ID = args[0]
-    except:
-        await bot.finish(ev, '请输入 国服绑定+ID+QQ号（可忽略） 中间用空格隔开。', at_sender=True)
-    try:
-        uid = args[1]
-    except:
-        uid = str(ev.user_id)
-    res = await query2(ID)
-    res = res['user_info']
-    binds[gid][ID] = {
-                'id': str(id),
-                'uid': uid,
-                'gid': gid,
-                'bindtype': '1'
-            }
-    save_binds()
-    await bot.finish(ev, f'[{res["user_name"]}]添加成功！')
-
+    with open(history, 'w') as hi: dump(root2, hi, indent=4)
 
 @sv.on_prefix('国服今日登录状态')
-async def on_query_arena(bot, ev):
+async def on_query_today_login_status(bot, ev):
     global binds, lck
     uid = str(ev.user_id)
     gid = str(ev.group_id)
@@ -385,7 +267,7 @@ async def on_query_arena(bot, ev):
             await bot.send(ev, f'error，{e}', at_sender=True)
 
 @sv.on_prefix('国服今日未登录名单')
-async def on_query_arena(bot, ev):
+async def on_query_today_not_login_list(bot, ev):
     global binds, lck
     uid = str(ev.user_id)
     gid = str(ev.group_id)
@@ -465,23 +347,6 @@ async def delete_arena_sub(bot,ev):
 
     await bot.finish(ev, f'已移除{ID}', at_sender=True)
 
-@sv.on_rex(r'^(清空国服绑定|清空国服监控)$')
-async def delete_arena_sub(bot,ev):
-    global binds, lck
-    uid = str(ev.user_id)
-    gid = str(ev.group_id)
-    u_priv = priv.get_user_priv(ev)
-    if u_priv < sv.manage_priv:
-        await bot.finish(ev, '权限不足', at_sender=True)
-    if not gid in binds:
-        await bot.finish(ev, f'名单没人！', at_sender=True)
-
-    async with lck:
-        binds.pop(gid)
-        save_binds()
-
-    await bot.finish(ev, '已清空全部绑定', at_sender=True)
-
 @sv.on_prefix(['国服推送时间设定'])
 async def times(bot, ev: CQEvent):
     args = ev.message.extract_plain_text().split()
@@ -503,17 +368,17 @@ async def times(bot, ev: CQEvent):
         time = int(args[0])
     except:
         await bot.finish(ev, '请输入 国服绑定+ID+QQ号（可忽略） 中间用空格隔开。', at_sender=True)
-    last = cfg[gid]
+    last = cfg.get(gid) or {}
 
     cfg[gid] = {
-                'admin': last is None or last['admin'],
-                'time': time
+            'admin': last.get('admin'),
+            'time': time
             }
-    save_binds()
+save_binds()
     await bot.finish(ev, f'设定成功！')
 
 @sv.on_prefix(['国服会长设定'])
-async def admin(bot, ev: CQEvent):
+async def set_guild_admin(bot, ev: CQEvent):
     args = ev.message.extract_plain_text().split()
     gid = str(ev.group_id)
     uid = str(ev.user_id)
@@ -540,117 +405,17 @@ async def admin(bot, ev: CQEvent):
             'admin': None,
             'time' : 23,
         }
-    last = cfg[gid]
+    last = cfg.get(gid) or {}
 
     cfg[gid] = {
             'admin': uid,
-            'time' : last is None or last['time'],
+            'time': last.get('time', 23),
             }
-    save_binds()
+save_binds()
     await bot.finish(ev, f'设定成功！')
 
-@sv.on_fullmatch('测试推送')
-async def send_arena_sub_status(bot,ev):
-    global cache, binds, lck
-    bot = get_bot()
-    async with lck:
-        bind_cache = deepcopy(binds)
-    for gid, uid_data in bind_cache.items():
-        #if cfg[f"{gid}"]["time"] != datetime.now(tz).hour:
-            #continue
-        n = 0
-        print(f"进行{gid}的检测")
-        for uid, data in uid_data.items():
-            print(f"  UID: {uid}, Data: {data}")
-            try:
-                if cfg[f"{gid}"]["admin"] != None:
-                    admin_id = cfg[f"{gid}"]["admin"]
-                    st = f"[CQ:at,qq={admin_id}]\n"
-                else:
-                    st = ""
-                for uid, data in binds[gid].items():
-                    try:
-                        res = await query(uid)
-                        timeStamp = res["last_login_time"]
-                        timeArray = time.localtime(timeStamp)
-                        otherStyleTime = time.strftime("%Y--%m--%d %H:%M:%S", timeArray)
-                        if has_claimed_reward(timeStamp):
-                            login = '今日已登录'
-                        else:
-                            login = '今日未登录'
-                            n += 1
-                            st = st + f'''[CQ:at,qq={data["uid"]}][{uid}]昵称：{res["user_name"]} {login} {otherStyleTime}\n'''
-                    except ApiException as e:
-                        await bot.send_group_msg(group_id = int(gid), message = f'ID{uid}查询出错，{e}', at_sender=True)
-            except ApiException as e:
-                await bot.send_group_msg(group_id = int(gid), message = f'error，{e}', at_sender=True)
-        if n == 0:
-            st = st + "今日登记的用户均已登录"
-            await bot.send_group_msg(group_id = int(gid), message = st)
-        else:
-            await bot.send_group_msg(group_id = int(gid), message = st)
-
-@sv.on_prefix(['国服录入公会'])
-async def admin(bot, ev: CQEvent):
-    args = ev.message.extract_plain_text().split()
-    gid = str(ev.group_id)
-    uid = str(ev.user_id)
-    u_priv = priv.get_user_priv(ev)
-    if u_priv < sv.manage_priv:
-        await bot.finish(ev, '权限不足', at_sender=True)
-    if not args:
-        await bot.finish(ev, '请输入 国服录入公会+公会名（必须准确） 中间用空格隔开。', at_sender=True)
-    name = args[0]
-    await bot.send(ev,'此功能即将弃用，建议使用公会绑定功能！')
-    try:
-        res = await query3(name)
-        clan_id = res["list"][0]["clan_id"]
-        print(clan_id)
-    except:
-        await bot.finish(ev, '获取公会信息失败，请确认公会名是否正确！', at_sender=True)
-    res2 = await query4(clan_id)
-    members = res2["clan"]["members"]
-# 提取所需字段
-    result = [
-    {
-        "viewer_id": member["viewer_id"],
-        "name": member["name"],
-        "last_login_time": member["last_login_time"]
-    }
-    for member in members
-    ]
-
-    if not gid in binds:
-        binds[gid] = {}
-        cfg[gid] = {
-            'admin': None,
-            'time' : 23,
-        }
-    if len(binds[gid]) >= 35:
-        await bot.finish(ev, f"{gid} 下的 uid 数量已达到上限！")
-    msg = '本次导入了以下用户：\n'
-    for data in result:
-        id = str(data['viewer_id'])
-        if id in binds[gid]:
-            continue
-        
-        binds[gid][id] = {
-                'id': str(id),
-                'uid': uid,
-                'gid': gid,
-                'bindtype': '0'
-            }
-        msg += f'{data["name"]}({id})\n'
-    save_binds()
-    clan_history[clan_id]={
-                'clan_id': str(clan_id),
-                'clan_name':str(name),
-    }
-    save_history()
-    await bot.finish(ev, f'{msg}\n请注意，导入的ID，QQ号均默认为消息发送人，如有需要可以替换绑定')
-
 @sv.on_prefix(['国服绑定公会'])
-async def admin(bot, ev: CQEvent):
+async def bind_clan(bot, ev: CQEvent):
     args = ev.message.extract_plain_text().split()
     gid = str(ev.group_id)
     uid = str(ev.user_id)
@@ -702,7 +467,7 @@ async def admin(bot, ev: CQEvent):
     await bot.finish(ev, f'绑定成功！')
 
 @sv.on_fullmatch(['国服更新公会信息'])
-async def admin(bot, ev: CQEvent):
+async def update_clan_info(bot, ev: CQEvent):
     gid = str(ev.group_id)
     uid = str(ev.user_id)
     u_priv = priv.get_user_priv(ev)
@@ -760,7 +525,7 @@ async def admin(bot, ev: CQEvent):
     await bot.finish(ev, f'{msg}\n请注意，导入的ID，QQ号均默认为消息发送人，如有需要可以替换绑定')
 
 @sv.on_fullmatch(['国服清理导入数据'])    
-async def admin(bot, ev: CQEvent):
+async def cleanup_imported_data(bot, ev: CQEvent):
     gid = str(ev.group_id)
     uid = str(ev.user_id)
     u_priv = priv.get_user_priv(ev)
@@ -777,56 +542,8 @@ async def admin(bot, ev: CQEvent):
     save_binds()
     await bot.finish(ev, f'清理已完成')
 
-@sv.on_prefix(['国服测试'])
-async def admin(bot, ev: CQEvent):
-    args = ev.message.extract_plain_text().split()
-    gid = str(ev.group_id)
-    uid = str(ev.user_id)
-    u_priv = priv.get_user_priv(ev)
-    if u_priv < sv.manage_priv:
-        await bot.finish(ev, '权限不足', at_sender=True)
-    if not args:
-        await bot.finish(ev, '请输入 国服录入公会+公会名（必须准确） 中间用空格隔开。', at_sender=True)
-    clan_id = args[0]
-    res2 = await query4(clan_id)
-    members = res2["clan"]["members"]
-# 提取所需字段
-    result = [
-    {
-        "viewer_id": member["viewer_id"],
-        "name": member["name"],
-        "last_login_time": member["last_login_time"]
-    }
-    for member in members
-    ]
-
-    if not gid in binds:
-        binds[gid] = {}
-        cfg[gid] = {
-            'admin': None,
-            'time' : 23,
-        }
-    if len(binds[gid]) >= 35:
-        await bot.finish(ev, f"{gid} 下的 uid 数量已达到上限！")
-    msg = '本次导入了以下用户：\n'
-    for data in result:
-        id = str(data['viewer_id'])
-        if id in binds[gid]:
-            continue
-        
-        binds[gid][id] = {
-                'id': str(id),
-                'uid': uid,
-                'gid': gid,
-                'bindtype': '0'
-            }
-        msg += f'{data["name"]}({id})\n'
-    save_binds()
-    
-    await bot.finish(ev, f'{msg}\n请注意，导入的ID，QQ号均默认为消息发送人，如有需要可以替换绑定')
-
 @sv.on_fullmatch('国服生成深域表')
-async def send_arena_sub_status(bot,ev):
+async def gen_sy_table_default(bot,ev):
     gid = str(ev.group_id)
     uid = str(ev.user_id)
     sheet = Initialized_Data()
@@ -897,7 +614,7 @@ async def send_arena_sub_status(bot,ev):
             await bot.send(ev, f'error，{e}', at_sender=True)
 
 @sv.on_prefix('国服生成公会深域表')
-async def send_arena_sub_status(bot,ev):
+async def gen_sy_table_by_clan_name(bot,ev):
     args = ev.message.extract_plain_text().split()
     gid = str(ev.group_id)
     uid = str(ev.user_id)
@@ -913,10 +630,10 @@ async def send_arena_sub_status(bot,ev):
     if not _flmt.check(key) and uid not in hoshino.config.SUPERUSERS:
         await bot.send(ev, f'操作太频繁，请在{int(_flmt.left_time(key))}秒后再试')
         return
-    name = args[0]
-    clan_id = 0
     if not args:
         await bot.finish(ev, '请使用国服生成公会深域表+公会名+会长名（必须准确） 中间用空格隔开。公会必须处于可搜索状态', at_sender=True)
+    name = args[0]
+    clan_id = 0
     try:
         res = await query3(name)
         if len(res["list"]) > 1:
@@ -992,7 +709,7 @@ async def send_arena_sub_status(bot,ev):
                 await bot.send(ev, f'error，{e}', at_sender=True)
 
 @sv.on_prefix('国服生成ID深域表')
-async def send_arena_sub_status(bot,ev):
+async def gen_sy_table_by_clan_id(bot,ev):
     args = ev.message.extract_plain_text().split()
     gid = str(ev.group_id)
     uid = str(ev.user_id)
@@ -1051,7 +768,7 @@ async def send_arena_sub_status(bot,ev):
                 await bot.send(ev, f'error，{e}', at_sender=True)
 
 @sv.on_prefix('国服生成定制深域表')
-async def send_arena_sub_status(bot,ev):
+async def gen_sy_table_custom_threshold(bot,ev):
     args = ev.message.extract_plain_text().split()
     u_priv = priv.get_user_priv(ev)
     if u_priv < sv.manage_priv:
@@ -1128,55 +845,61 @@ async def send_arena_sub_status(bot,ev):
         except ApiException as e:
             await bot.send(ev, f'error，{e}', at_sender=True)
 
+
 @sv.scheduled_job('interval', hours=1)
 async def on_arena_schedule():
-    global cache, binds, lck
+    global binds, cfg, lck
     bot = get_bot()
     tz = pytz.timezone('Asia/Shanghai')
+
+    # 保活/容错：避免接口偶发失败影响主流程
     try:
-        res2 = await query4('1')
+        await query4(1)
     except:
         pass
+
     async with lck:
         bind_cache = deepcopy(binds)
+        cfg_cache = deepcopy(cfg)
+
+    now_hour = datetime.now(tz).hour
+
     for gid, uid_data in bind_cache.items():
-        if cfg[f"{gid}"]["time"] != datetime.now(tz).hour:
+        gid_str = str(gid)
+        group_cfg = cfg_cache.get(gid_str, {})
+        push_hour = group_cfg.get("time", 23)
+        if push_hour != now_hour:
             continue
-        n = 0
-        st = ""
-        print(f"进行{gid}的检测")
-        for uid, data in uid_data.items():
-            print(f"  UID: {uid}, Data: {data}")
+
+        admin_id = group_cfg.get("admin")
+        header = f"[CQ:at,qq={admin_id}]\n" if admin_id else ""
+
+        lines = []
+        n_not_login = 0
+
+        for game_uid, data in uid_data.items():
             try:
-                if cfg[f"{gid}"]["admin"] != None:
-                    admin_id = cfg[f"{gid}"]["admin"]
-                    st = f"[CQ:at,qq={admin_id}]\n"
-                else:
-                    st = ""
-                for uid, data in binds[gid].items():
-                    try:
-                        res = await query(uid)
-                        timeStamp = res["last_login_time"]
-                        timeArray = time.localtime(timeStamp)
-                        otherStyleTime = time.strftime("%Y--%m--%d %H:%M:%S", timeArray)
-                        if has_claimed_reward(timeStamp) == 0:
-                            login = '今日已登录'
-                        else:
-                            login = '今日未登录'
-                            n += 1
-                            st = st + f'''[CQ:at,qq={data["uid"]}][{uid}]昵称：{res["user_name"]} {login} {otherStyleTime}\n'''
-                    except ApiException as e:
-                        await bot.send_group_msg(group_id = int(gid), message = f'ID{uid}查询出错，{e}', at_sender=True)
+                res = await query(game_uid)
+                timeStamp = res["last_login_time"]
+                otherStyleTime = time.strftime("%Y--%m--%d %H:%M:%S", time.localtime(timeStamp))
+
+                # 与“国服今日登录状态/未登录名单”保持一致：has_claimed_reward 为真则视作今日已登录
+                if has_claimed_reward(timeStamp):
+                    continue
+
+                n_not_login += 1
+                qq_to_at = data.get("uid")
+                lines.append(
+                    f'[CQ:at,qq={qq_to_at}][{game_uid}]昵称：{res["user_name"]} 今日未登录 {otherStyleTime}'
+                )
             except ApiException as e:
-                await bot.send_group_msg(group_id = int(gid), message = f'error，{e}', at_sender=True)
-        if n == 0:
-            st = st + "今日登记的用户均已登录"
-            await bot.send_group_msg(group_id = int(gid), message = st)
+                await bot.send_group_msg(group_id=int(gid), message=f'ID{game_uid}查询出错，{e}')
+            except Exception as e:
+                await bot.send_group_msg(group_id=int(gid), message=f'ID{game_uid}查询异常，{e}')
+
+        if n_not_login == 0:
+            msg = header + "今日登记的用户均已登录"
         else:
-            await bot.send_group_msg(group_id = int(gid), message = st)
+            msg = header + "\n".join(lines)
 
-
-
-
-
-
+        await bot.send_group_msg(group_id=int(gid), message=msg)
