@@ -1,4 +1,4 @@
-from json import load, dump
+from json import load, dump, loads
 from nonebot import get_bot, on_command
 import hoshino
 from hoshino import priv
@@ -27,7 +27,7 @@ from .geetest import public_address
 
 
 
-sv = SafeService('竞技场名单国服')
+sv = SafeService('深域查询')
 
 
 
@@ -76,42 +76,74 @@ async def captchaVerifierV2(gt, challenge, userid):
 
     validating = True
     captcha_cnt = 0
+    # 外部大循环：尝试 5 次整体流程
     while captcha_cnt < 5:
         captcha_cnt += 1
         try:
-            print(f'测试新版自动过码中，当前尝试第{captcha_cnt}次。')
+            # 使用 sv.logger (SafeService 实例) 记录日志
+            sv.logger.info(f'测试新版自动过码中，当前尝试第{captcha_cnt}次。')
 
-            await sleep(1)
-            uuid = loads(await (await get(url="https://pcrd.tencentbot.top/geetest")).content)["uuid"]
-            print(f'uuid={uuid}')
+            await asyncio.sleep(1)
 
+            # 修改点 1：使用 geetest_renew 接口并传入所有参数
+            url = f"https://pcrd.tencentbot.top/geetest_renew?captcha_type=1&challenge={challenge}&gt={gt}&userid={userid}&gs=1"
+            header = {"Content-Type": "application/json", "User-Agent": "pcrjjc2/1.0.0"}
+
+            # 发起初始请求获取 uuid
+            res_raw = await (await get(url=url, headers=header)).content
+            res = loads(res_raw)
+            uuid = res["uuid"]
+            sv.logger.info(f'已获取验证任务 uuid={uuid}')
+            
             ccnt = 0
-            while ccnt < 3:
+            # 修改点 2：内部轮询增加到 10 次，提高成功率
+            while ccnt < 10:
                 ccnt += 1
-                await sleep(5)
-                res = await (await get(url=f"https://pcrd.tencentbot.top/check/{uuid}")).content
-                res = loads(res)
-                if "queue_num" in res:
-                    nu = res["queue_num"]
-                    print(f"queue_num={nu}")
-                    tim = min(int(nu), 3) * 5
-                    print(f"sleep={tim}")
-                    await sleep(tim)
+                await asyncio.sleep(5) # 每次轮询前基础等待
+                
+                check_url = f"https://pcrd.tencentbot.top/check/{uuid}"
+                res_check_raw = await (await get(url=check_url, headers=header)).content
+                res_check = loads(res_check_raw)
+                
+                if "queue_num" in res_check:
+                    # 如果在排队，根据排队人数动态调整等待时间
+                    nu = res_check["queue_num"]
+                    tim = min(int(nu), 3) * 10 # 修改点 3：延长排队等待步长
+                    sv.logger.info(f"验证任务排队中: queue_num={nu}, sleep={tim}s")
+                    await asyncio.sleep(tim)
                 else:
-                    info = res["info"]
+                    info = res_check["info"]
                     if info in ["fail", "url invalid"]:
+                        sv.logger.warning(f"验证失败或链接失效: {info}")
                         break
                     elif info == "in running":
-                        await sleep(5)
-                    else:
-                        print(f'info={info}')
+                        sv.logger.info("验证码处理中...")
+                        await asyncio.sleep(5)
+                    elif isinstance(info, dict) and 'validate' in info:
+                        # 修改点 4：识别成功返回的 validate 数据
+                        sv.logger.info("自动过码成功！")
                         validating = False
                         return info["challenge"], info["gt_user_id"], info["validate"]
-        except:
+                
+                if ccnt >= 10:
+                    raise Exception("单次任务轮询超时")
+                    
+        except Exception as e:
+            sv.logger.error(f"自动过码尝试发生异常: {e}")
             pass
-    validate = await captchaVerifier(gt, challenge, userid)
+
+    # 修改点 5：降级逻辑
+    # 如果 5 次大循环都失败了，通知管理员并切换到原来的手动 captchaVerifier
+    await bot.send_private_msg(
+        user_id = acinfo['admin'],
+        message = f'自动过码多次尝试失败，可能为远程服务器故障，已自动切换为【手动模式】。请及时处理。'
+    )
+    
+    # 调用手动验证函数
+    validate_res = await captchaVerifier(gt, challenge, userid)
     validating = False
-    return challenge, userid, validate
+    # 注意：手动验证 captchaVerifier 返回的是单值 validate，这里需要匹配返回结构
+    return challenge, userid, validate_res
     
 async def captchaVerifier(gt, challenge, userid):
     global acfirst
@@ -138,14 +170,14 @@ bclient = bsdkclient(acinfo, captchaVerifierV2, errlogger)
 client = pcrclient(bclient)
 
 qlck = Lock()
-'''
+
 @on_command('/pcrvalx')
 async def validate(session):
     global binds, lck, validate
     if session.ctx['user_id'] == acinfo['admin']:
         validate = session.ctx['message'].extract_plain_text().strip()[9:]
         captcha_lck.release()
-        '''
+'''
 @sv.on_prefix(['/pcrvalx'])
 async def use(bot, ev: CQEvent):
     global binds, lck, validate
@@ -155,7 +187,7 @@ async def use(bot, ev: CQEvent):
         validate = args[0]
         captcha_lck.release()
         print("success")
-    
+ '''   
 
 
 def is_group_admin(ctx):
