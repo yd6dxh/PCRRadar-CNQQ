@@ -150,6 +150,32 @@ async def ensure_login():
         await client.login()
         sss = 0
 
+async def ensure_login():
+    """只在需要时登录一次（由 sss 控制）"""
+    global sss
+    if sss == 1:
+        await client.login()
+        sss = 0
+
+async def callapi_with_relogin(path: str, data: dict, retries: int = 1):
+    """
+    调用 API：失败则重登并重试（解决超时/断线后无法恢复的问题）
+    retries=1 表示：失败后最多再试 1 次
+    """
+    global sss
+    async with qlck:
+        for attempt in range(retries + 1):
+            try:
+                await ensure_login()
+                return await client.callapi(path, data)
+            except Exception:
+                if attempt >= retries:
+                    raise
+                # 关键：认为登录已失效，强制下次重新 login
+                sss = 1
+                # 可选：给一点缓冲，避免立刻重登撞到网络抖动
+                await asyncio.sleep(1)
+
 @on_command('/pcrvalx')
 async def pcr_manual_val(session):
     global validate
@@ -162,38 +188,39 @@ async def pcr_manual_val(session):
 # --- 核心查询函数 (已修复 sss 引用) ---
 
 async def query(id: str):
-    async with qlck:
-        await ensure_login()
-        max_retries = 3
-        for attempt in range(1, max_retries + 1):
-            try:
-                res = await client.callapi('/profile/get_profile', {'target_viewer_id': int(id)})
-                return res['user_info']
-            except:
-                if attempt == max_retries:
-                    raise
-                await asyncio.sleep(2)
+    res = await callapi_with_relogin(
+        '/profile/get_profile',
+        {'target_viewer_id': int(id)},
+        retries=1
+    )
+    return res['user_info']
 
 async def query2(id: str):
-    async with qlck:
-        await ensure_login()
-        return await client.callapi('/profile/get_profile', {'target_viewer_id': int(id)})
+    return await callapi_with_relogin(
+        '/profile/get_profile',
+        {'target_viewer_id': int(id)},
+        retries=1
+    )
 
 async def query3(name):
-    async with qlck:
-        await ensure_login()
-        return await client.callapi('/clan/search_clan', {
+    return await callapi_with_relogin(
+        '/clan/search_clan',
+        {
             'clan_name': str(name),
             "join_condition": 1,
             "member_condition_range": 0,
             "activity": 0,
             "clan_battle_mode": 0
-        })
+        },
+        retries=1
+    )
 
 async def query4(clan_id):
-    async with qlck:
-        await ensure_login()
-        return await client.callapi('/clan/others_info', {'clan_id': int(clan_id)})
+    return await callapi_with_relogin(
+        '/clan/others_info',
+        {'clan_id': int(clan_id)},
+        retries=1
+    )
 
 # --- 指令部分 (修复 IndexError) ---
 
