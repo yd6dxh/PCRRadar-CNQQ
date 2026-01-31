@@ -12,7 +12,10 @@ from datetime import datetime
 from dateutil.parser import parse
 from os.path import dirname, join, exists
 import traceback
+import uuid
 
+def gen_device_id():
+    return uuid.uuid4().hex
 # 你当前实际在用的
 apiroot = 'https://le1-prod-all-gs-gzlj.bilibiligame.net'
 
@@ -33,7 +36,7 @@ defaultHeaders = {
     'BATTLE-LOGIC-VERSION': '4',
     'BUNDLE-VER': '',
     'DEVICE': '2',
-    'DEVICE-ID': '7b1703a5d9b394e24051d7a5d4818f17',
+    'DEVICE-ID': gen_device_id(),
     'DEVICE-NAME': 'OPPO PCRT00',
     'EXCEL-VER': '1.0.0',
     'GRAPHICS-DEVICE-NAME': 'Adreno (TM) 640',
