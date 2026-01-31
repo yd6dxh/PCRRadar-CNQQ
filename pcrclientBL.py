@@ -157,14 +157,14 @@ class pcrclient:
 
             if 'viewer_id' in data_headers:
                 self.viewer_id = data_headers['viewer_id']
-            if "/check/game_start" == apiurl and "store_url" in data_headers:
-                global version
-                version = search(r'_v?([4-9]\.\d\.\d).*?_', data_headers["store_url"]).group(1)
-                defaultHeaders['APP-VER'] = version
-                self.headers['APP-VER'] = version
-                with open(config, "w", encoding='utf-8') as fp:
-                    print(version, file=fp)
-                raise ApiException(f"版本已更新:{version}", 0)
+            # if "/check/game_start" == apiurl and "store_url" in data_headers:
+            #     global version
+            #     version = search(r'_v?([4-9]\.\d\.\d).*?_', data_headers["store_url"]).group(1)
+            #     defaultHeaders['APP-VER'] = version
+            #     self.headers['APP-VER'] = version
+            #     with open(config, "w", encoding='utf-8') as fp:
+            #         print(version, file=fp)
+            #     raise ApiException(f"版本已更新:{version}", 0)
         
             data = response['data']
             if not noerr and 'server_error' in data:
@@ -189,6 +189,23 @@ class pcrclient:
 
         while True:
             manifest = await self.callapi('/source_ini/get_maintenance_status?format=json', {}, False, noerr = True)
+            if "store_url" in manifest:
+                m = search(r'(?<=gzlj_)(\d+\.\d+\.\d+)', manifest["store_url"])
+                if not m:
+                    raise ApiException("无法从 store_url 解析版本号", 0)
+
+                new_ver = m.group(1)
+
+                global version
+                if new_ver != version:
+                    version = new_ver
+                    defaultHeaders['APP-VER'] = new_ver
+                    self.headers['APP-VER'] = new_ver
+                    with open(config, "w", encoding="utf-8") as fp:
+                        fp.write(new_ver)
+
+                    # 抛异常让外层重试 login（和你原来的做法一致）
+                    raise ApiException(f"版本已更新:{new_ver}", 0)
             if 'maintenance_message' not in manifest:
                 break
 
