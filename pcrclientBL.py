@@ -1,4 +1,3 @@
-from mmap import ACCESS_COPY
 from msgpack import packb, unpackb
 from .aiorequests import post
 from random import randint
@@ -14,10 +13,13 @@ from dateutil.parser import parse
 from os.path import dirname, join, exists
 import traceback
 
+# 你当前实际在用的
 apiroot = 'https://le1-prod-all-gs-gzlj.bilibiligame.net'
+
 curpath = dirname(__file__)
 config = join(curpath, 'version.txt')
 
+# 没有 version.txt 也能跑；一旦解析到新版本会自动创建
 version = "4.9.4"
 if exists(config):
     with open(config, encoding='utf-8') as fp:
@@ -45,6 +47,9 @@ defaultHeaders = {
     'SHORT-UDID': '0'
 }
 
+# === 按 apiclient：CBC IV 用这一组 ===
+_AES_IV = b'7Fk9Lm3Np8Qr4Sv2'
+
 
 class ApiException(Exception):
     def __init__(self, message, code):
@@ -53,14 +58,14 @@ class ApiException(Exception):
 
 
 class bsdkclient:
-    '''
-        acccountinfo = {
-            'account': '',
-            'password': '',
-            'platform': 2, # indicates android platform
-            'channel': 1, # indicates bilibili channel
-        }
-    '''
+    """
+    acccountinfo = {
+        'account': '',
+        'password': '',
+        'platform': 2,
+        'channel': 1,
+    }
+    """
     def __init__(self, acccountinfo, captchaVerifier, errlogger):
         self.account = acccountinfo['account']
         self.pwd = acccountinfo['password']
@@ -75,7 +80,6 @@ class bsdkclient:
             if resp['code'] == 0:
                 break
             await self.errlogger(resp['message'])
-
         return resp['uid'], resp['access_key']
 
 
@@ -83,12 +87,9 @@ class pcrclient:
     def __init__(self, bsclient: bsdkclient):
         self.viewer_id = 0
         self.bsdk = bsclient
-        # 沿用你项目现有的错误输出方式：由上层传进来的 errlogger（一般是 sv.logger.error）
         self.errlogger = getattr(bsclient, "errlogger", None)
 
-        self.headers = {}
-        for key in defaultHeaders.keys():
-            self.headers[key] = defaultHeaders[key]
+        self.headers = {k: defaultHeaders[k] for k in defaultHeaders.keys()}
 
         self.shouldLogin = True
         self.shouldLoginB = True
@@ -114,55 +115,51 @@ class pcrclient:
 
     @staticmethod
     def pack(data: object, key: bytes) -> bytes:
-        aes = AES.new(key, AES.MODE_CBC, b'ha4nBYA2APUD6Uv1')
-        return aes.encrypt(pcrclient.add_to_16(packb(data,
-                                                   use_bin_type=False
-                                                   ))) + key
+        aes = AES.new(key, AES.MODE_CBC, _AES_IV)
+        return aes.encrypt(pcrclient.add_to_16(packb(data, use_bin_type=False))) + key
 
     @staticmethod
     def encrypt(data: str, key: bytes) -> bytes:
-        aes = AES.new(key, AES.MODE_CBC, b'ha4nBYA2APUD6Uv1')
+        aes = AES.new(key, AES.MODE_CBC, _AES_IV)
         return aes.encrypt(pcrclient.add_to_16(data.encode('utf8'))) + key
 
     @staticmethod
     def decrypt(data: bytes):
         data = b64decode(data.decode('utf8'))
-        aes = AES.new(data[-32:], AES.MODE_CBC, b'ha4nBYA2APUD6Uv1')
+        aes = AES.new(data[-32:], AES.MODE_CBC, _AES_IV)
         return aes.decrypt(data[:-32]), data[-32:]
 
     @staticmethod
     def unpack(data: bytes):
         data = b64decode(data.decode('utf8'))
-        aes = AES.new(data[-32:], AES.MODE_CBC, b'ha4nBYA2APUD6Uv1')
+        aes = AES.new(data[-32:], AES.MODE_CBC, _AES_IV)
         dec = aes.decrypt(data[:-32])
-        return unpackb(dec[:-dec[-1]],
-                       strict_map_key=False
-                       ), data[-32:]
+        return unpackb(dec[:-dec[-1]], strict_map_key=False), data[-32:]
 
     async def callapi(self, apiurl: str, request: dict, crypted: bool = True, noerr: bool = False):
         key = pcrclient.createkey()
-
         try:
             if self.viewer_id is not None:
                 request['viewer_id'] = b64encode(
                     pcrclient.encrypt(str(self.viewer_id), key)
                 ) if crypted else str(self.viewer_id)
 
-            response = await (await post(apiroot + apiurl,
-                                         data=pcrclient.pack(request, key) if crypted else str(request).encode('utf8'),
-                                         headers=self.headers,
-                                         timeout=10)).content
+            raw = await (await post(
+                apiroot + apiurl,
+                data=pcrclient.pack(request, key) if crypted else str(request).encode('utf8'),
+                headers=self.headers,
+                timeout=10
+            )).content
 
-            response = pcrclient.unpack(response)[0] if crypted else loads(response)
-
+            response = pcrclient.unpack(raw)[0] if crypted else loads(raw)
             data_headers = response['data_headers']
 
-            # === 完全按 apiclient：只在 maintenance_status 接口且 data_headers 里出现 store_url 时更新版本 ===
+            # === 完全按 apiclient：在 maintenance_status 的 data_headers.store_url 触发版本更新 ===
             if apiurl == "/source_ini/get_maintenance_status?format=json" and "store_url" in data_headers:
-                match = search(r'(?<=gzlj_)(\d+\.\d+\.\d+)', data_headers["store_url"])
-                if not match:
+                m = search(r'(?<=gzlj_)(\d+\.\d+\.\d+)', data_headers["store_url"])
+                if not m:
                     raise ValueError("无法解析版本号，请手动修改version")
-                new_ver = match.group(1)
+                new_ver = m.group(1)
 
                 global version
                 version = new_ver
@@ -186,24 +183,20 @@ class pcrclient:
 
             data = response['data']
             if not noerr and 'server_error' in data:
-                data = data['server_error']
-
-                # === 按你项目现有方式输出错误：走 errlogger（sv.logger.error）===
+                err = data['server_error']
                 if self.errlogger:
                     try:
-                        await self.errlogger(f"pcrclient: {apiurl} api failed {data}")
+                        await self.errlogger(f"pcrclient: {apiurl} api failed {err}")
                     except:
                         pass
-
                 if "store_url" in data_headers:
-                    raise ApiException(f"版本自动更新失败：({data['message']})", data['status'])
-                raise ApiException(data['message'], data['status'])
+                    raise ApiException(f"版本自动更新失败：({err['message']})", err['status'])
+                raise ApiException(err['message'], err['status'])
 
             print(f'pcrclient: {apiurl} api called')
             return data
 
         except Exception as e:
-            # === 异常也交给 errlogger，保证 journalctl 里能看到 ===
             if self.errlogger:
                 try:
                     await self.errlogger(f"pcrclient: exception at {apiurl}: {repr(e)}")
@@ -232,7 +225,7 @@ class pcrclient:
                 while datetime.now() < end:
                     await sleep(1)
             except:
-                print(f'server is in maintenance. waiting for 60 secs')
+                print('server is in maintenance. waiting for 60 secs')
                 await sleep(60)
 
         ver = manifest['required_manifest_ver']
@@ -291,9 +284,7 @@ class pcrclient:
         if not gamestart['now_tutorial']:
             raise Exception("该账号没过完教程!")
 
-        await self.callapi('/load/index', {
-            'carrier': 'OPPO'
-        })
+        await self.callapi('/load/index', {'carrier': 'OPPO'})
         await self.callapi('/home/index', {
             'message_id': 1,
             'tips_id_list': [],
